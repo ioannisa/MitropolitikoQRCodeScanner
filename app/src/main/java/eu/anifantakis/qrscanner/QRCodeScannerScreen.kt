@@ -1,11 +1,6 @@
 package eu.anifantakis.qrscanner
 
 import android.Manifest
-import android.util.Log
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,86 +28,55 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable
-fun QrCodeScannerScreen() {
+fun QrCodeScannerScreen(
+    viewModel: QRCodeScannerViewModel = viewModel()
+) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var scannedValue by remember { mutableStateOf<String?>(null) }
-    var isCameraEnabled by remember { mutableStateOf(false) }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+
+    // Collect states από το ViewModel
+    val scannedValue by viewModel.scannedValue.collectAsStateWithLifecycle()
+    val isCameraEnabled by viewModel.isCameraEnabled.collectAsStateWithLifecycle()
 
     val cameraPermissionState = rememberPermissionState(
         permission = Manifest.permission.CAMERA
     )
 
-    val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
-    var cameraProvider: ProcessCameraProvider? by remember { mutableStateOf(null) }
+    var cameraProvider by remember { mutableStateOf<androidx.camera.lifecycle.ProcessCameraProvider?>(null) }
     val previewView = remember {
         PreviewView(context).apply {
             this.scaleType = PreviewView.ScaleType.FILL_CENTER
         }
     }
-    val cameraExecutor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
 
-    LaunchedEffect(cameraProviderFuture) {
-        try {
-            cameraProvider = cameraProviderFuture.get()
-        } catch (e: Exception) {
-            Log.e("QRCodeScanner", "Error getting camera provider", e)
+    // Αρχικοποίηση του camera provider
+    LaunchedEffect(Unit) {
+        viewModel.initializeCameraProvider(context) { provider ->
+            cameraProvider = provider
         }
     }
 
+    // Ρύθμιση της κάμερας όταν αλλάζουν οι καταστάσεις
     LaunchedEffect(isCameraEnabled, cameraPermissionState.status.isGranted, cameraProvider) {
-        if (cameraPermissionState.status.isGranted && isCameraEnabled && cameraProvider != null) {
-            try {
-                cameraProvider?.unbindAll()
-                val cameraSelector = CameraSelector.Builder()
-                    .requireLensFacing(CameraSelector.LENS_FACING_BACK)
-                    .build()
-                val preview = Preview.Builder().build().also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
-                }
-                val imageAnalysis = ImageAnalysis.Builder()
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-                    .also {
-                        it.setAnalyzer(cameraExecutor, BarcodeAnalyzer { barcodes ->
-                            barcodes.firstOrNull()?.rawValue?.let { value ->
-                                if (scannedValue != value) {
-                                    previewView.post {
-                                        scannedValue = value
-                                    }
-                                }
-                            }
-                        })
-                    }
-
-                cameraProvider?.bindToLifecycle(
-                    lifecycleOwner,
-                    cameraSelector,
-                    preview,
-                    imageAnalysis
-                )
-            } catch (exc: Exception) {
-                Log.e("QRCodeScanner", "Camera Use case binding FAILED", exc)
-                previewView.post { isCameraEnabled = false }
-            }
-        } else {
-            cameraProvider?.unbindAll()
-        }
+        viewModel.setupCamera(
+            lifecycleOwner = lifecycleOwner,
+            surfaceProvider = previewView.surfaceProvider,
+            hasCameraPermission = cameraPermissionState.status.isGranted
+        )
     }
 
+    // Καθαρισμός πόρων όταν το Composable αφαιρείται
     DisposableEffect(Unit) {
         onDispose {
-            cameraExecutor.shutdown()
-            cameraProvider?.unbindAll()
+            viewModel.unbindCamera()
         }
     }
 
@@ -163,8 +127,7 @@ fun QrCodeScannerScreen() {
                         Switch(
                             checked = isCameraEnabled,
                             onCheckedChange = { checked ->
-                                scannedValue = null
-                                isCameraEnabled = checked
+                                viewModel.toggleCamera(checked)
                             }
                         )
                     }
